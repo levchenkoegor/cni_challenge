@@ -1,120 +1,76 @@
-import os
+from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
-from numpy import linalg as LA
+from numpy import linalg
 from scipy.sparse import csgraph
+from sklearn.model_selection import GridSearchCV
 from sklearn.svm import SVC
 
-## Read the paths to the data
-# Training data
-tr_X_path = r"inputdir\2019_CNI_TrainingRelease-master\Training"
-tr_Y_path = r"inputdir\2019_CNI_TrainingRelease-master\SupportingInfo\phenotypic_training.csv"
+# define paths
+project_root = Path()
+data_dir = project_root / 'inputdir'
+data_dir_train = data_dir / '2019_CNI_TrainingRelease-master'
+data_dir_test = data_dir / '2019_CNI_ValidationRelease-master'
 
-X_tr_data_aal = [pd.read_csv((a+'\\'+c[1]), header=None) for (a,b,c) in os.walk(tr_X_path) if len(c)>1]
-X_tr_data_cc200 = [pd.read_csv((a+'\\'+c[2]), header=None) for (a,b,c) in os.walk(tr_X_path) if len(c)>1]
-X_tr_data_ho = [pd.read_csv((a+'\\'+c[3]), header=None) for (a,b,c) in os.walk(tr_X_path) if len(c)>1]
+# load data
+train_paths = sorted(list(data_dir_train.glob('Training/*/timeseries_*.csv')))
+train_tss = [pd.read_csv(path) for path in train_paths]
+train_phen = pd.read_csv(data_dir_train / 'SupportingInfo' / 'phenotypic_training.csv').replace(
+    {"ADHD": 1, "Control": 0, "F": 0, "M": 1})
 
-Y_tr_data = pd.read_csv(tr_Y_path)
-
-# Test data
-test_X_path = r"inputdir\2019_CNI_ValidationRelease-master\Validation"
-test_Y_path = r"inputdir\2019_CNI_ValidationRelease-master\SupportingInfo\phenotypic_validation.csv"
-
-X_test_data_aal = [pd.read_csv((a+'\\'+c[1]), header=None) for (a,b,c) in os.walk(test_X_path) if len(c)>1]
-X_test_data_cc200 = [pd.read_csv((a+'\\'+c[2]), header=None) for (a,b,c) in os.walk(test_X_path) if len(c)>1]
-X_test_data_ho = [pd.read_csv((a+'\\'+c[3]), header=None) for (a,b,c) in os.walk(test_X_path) if len(c)>1]
-
-Y_test_data = pd.read_csv(test_Y_path)
+test_paths = sorted(list(data_dir_test.glob('Validation/*/timeseries_*.csv')))
+test_tss = [pd.read_csv(path) for path in test_paths]
+test_phen = pd.read_csv(data_dir_test / 'SupportingInfo' / 'phenotypic_validation.csv').replace(
+    {"ADHD": 1, "Control": 0, "F": 0, "M": 1})
 
 # Rename string answers to ints
-Y_tr_data = Y_tr_data.replace({"ADHD": 1, "Control": 0, "F": 0, "M": 1}).drop(columns='Subj')
-Y_test_data = Y_test_data.replace({"ADHD": 1, "Control": 0, "F": 0, "M": 1}).drop(columns='Subj')
+# Y_tr_data = Y_tr_data.replace({"ADHD": 1, "Control": 0, "F": 0, "M": 1}).drop(columns='Subj')
+# Y_test_data = Y_test_data.replace({"ADHD": 1, "Control": 0, "F": 0, "M": 1}).drop(columns='Subj')
 
-# Calculate corr matrix for train and test datasets
-corr_mats_aal = [df.T.corr() for df in X_tr_data_aal]
-corr_mats_cc200 = [df.T.corr() for df in X_tr_data_cc200]
-corr_mats_ho = [df.T.corr() for df in X_tr_data_ho]
+# calculate corr mat for train and test
+train_corr_mats = [df.T.corr() for df in train_tss]
+test_corr_mats = [df.T.corr() for df in test_tss]
 
-corr_mats_test_aal = [df.T.corr() for df in X_test_data_aal]
-corr_mats_test_cc200 = [df.T.corr() for df in X_test_data_cc200]
-corr_mats_test_ho = [df.T.corr() for df in X_test_data_ho]
+# replace negative values to zero
+train_corr_mats_pos = [df.clip(lower=0) for df in train_corr_mats]
+test_corr_mats_pos = [df.clip(lower=0) for df in test_corr_mats]
 
+# laplacian and eigenavalues
+train_laplac_mats = [csgraph.laplacian(corr_mat.values, normed=True) for corr_mat in train_corr_mats_pos]
+train_eigs = np.concatenate([linalg.eigvals(corr_mat) for corr_mat in train_laplac_mats], axis=0)
 
-# Change to zero negative values for training (for future Laplacian)
-for subj in corr_mats_aal:
-    np.fill_diagonal(subj.values, 0)
-    for n in np.nditer(subj.values, op_flags=['readwrite']):
-        if n < 0:
-            n[...] = 0
+test_laplac_mats = [csgraph.laplacian(corr_mat.values, normed=True) for corr_mat in test_corr_mats_pos]
+test_eigs = np.concatenate([linalg.eigvals(corr_mat) for corr_mat in test_laplac_mats], axis=0)
 
-for subj in corr_mats_cc200:
-    np.fill_diagonal(subj.values, 0)
-    for n in np.nditer(subj.values, op_flags=['readwrite']):
-        if n < 0:
-            n[...] = 0
+# construct x and y for train/test
+train_eigs_by_subj = np.vstack(np.split(train_eigs, 200))  # 200 subjects in train
+X_train = pd.concat([train_phen, pd.DataFrame(train_eigs_by_subj)], axis=1).drop(columns=['DX', 'Subj'])
+y_train = train_phen['DX'].values
 
-for subj in corr_mats_ho:
-    np.fill_diagonal(subj.values, 0)
-    for n in np.nditer(subj.values, op_flags=['readwrite']):
-        if n < 0:
-            n[...] = 0
+test_eigs_by_subj = np.vstack(np.split(test_eigs, 40))  # 40 subjects in test
+X_test = pd.concat([test_phen, pd.DataFrame(test_eigs_by_subj)], axis=1).drop(columns=['DX', 'Subj'])
+y_test = test_phen['DX'].values
 
-# Change to zero negative values for validation (for future Laplacian)
-for subj in corr_mats_test_aal:
-    np.fill_diagonal(subj.values, 0)
-    for n in np.nditer(subj.values, op_flags=['readwrite']):
-        if n < 0:
-            n[...] = 0
+# tune hyper parameters for SVM (~19 min) and save
+svm_model = SVC()
+param_grid = {'C': [0.01, 0.1, 1, 10, 25, 50, 100],
+              'gamma': [0.001, 0.01, 0.1, 0.5, 1],
+              'kernel': ['rbf', 'poly', 'sigmoid']}
+grid = GridSearchCV(SVC(), param_grid, refit=True, verbose=2)
+grid.fit(X_train, y_train)
+joblib.dump(grid.best_params_, project_root / 'outputdir' / 'gridSearch_best_params')
 
-for subj in corr_mats_test_cc200:
-    np.fill_diagonal(subj.values, 0)
-    for n in np.nditer(subj.values, op_flags=['readwrite']):
-        if n < 0:
-            n[...] = 0
+print(f'The best score: {grid.best_score_},\n'
+      f'The best params: {grid.best_params_}')
 
-for subj in corr_mats_test_ho:
-    np.fill_diagonal(subj.values, 0)
-    for n in np.nditer(subj.values, op_flags=['readwrite']):
-        if n < 0:
-            n[...] = 0
+# train and predict
+loaded_params = joblib.load(project_root / 'outputdir' / 'gridSearch_best_params')
 
-# Laplacian and eigenavalues
-laplac_mats_aal = [csgraph.laplacian(corr_mat_pat.values, normed=True) for corr_mat_pat in corr_mats_aal]
-laplac_mats_cc200 = [csgraph.laplacian(corr_mat_pat.values, normed=True) for corr_mat_pat in corr_mats_cc200]
-laplac_mats_ho = [csgraph.laplacian(corr_mat_pat.values, normed=True) for corr_mat_pat in corr_mats_ho]
-
-eigs_aal = [LA.eigvals(corr_mat) for corr_mat in laplac_mats_aal]
-eigs_cc200 = [LA.eigvals(corr_mat) for corr_mat in laplac_mats_cc200]
-eigs_ho = [LA.eigvals(corr_mat) for corr_mat in laplac_mats_ho]
-
-laplac_mats_test_aal = [csgraph.laplacian(corr_mat_pat.values, normed=True) for corr_mat_pat in corr_mats_test_aal]
-laplac_mats_test_cc200 = [csgraph.laplacian(corr_mat_pat.values, normed=True) for corr_mat_pat in corr_mats_test_cc200]
-laplac_mats_test_ho = [csgraph.laplacian(corr_mat_pat.values, normed=True) for corr_mat_pat in corr_mats_test_ho]
-
-eigs_test_aal = [LA.eigvals(corr_mat) for corr_mat in laplac_mats_test_aal]
-eigs_test_cc200 = [LA.eigvals(corr_mat) for corr_mat in laplac_mats_test_cc200]
-eigs_test_ho = [LA.eigvals(corr_mat) for corr_mat in laplac_mats_test_ho]
-
-# Construct dataset to train
-X_aal = np.vstack(eigs_aal)
-X_cc200 = np.vstack(eigs_cc200)
-X_ho = np.vstack(eigs_ho)
-
-X_test_aal = np.vstack(eigs_test_aal)
-X_test_cc200 = np.vstack(eigs_test_cc200)
-X_test_ho = np.vstack(eigs_test_ho)
-
-X_train = pd.concat([Y_tr_data, pd.DataFrame(X_aal), pd.DataFrame(X_cc200), pd.DataFrame(X_ho)], axis=1).drop(columns='DX')
-y_train= Y_tr_data['DX'].values
-
-X_test = pd.concat([Y_test_data, pd.DataFrame(X_test_aal), pd.DataFrame(X_test_cc200), pd.DataFrame(X_test_ho)], axis=1).drop(columns='DX')
-y_test = Y_test_data['DX'].values
-
-# Train with optimal hyperparameters (was calculated in other script)
-svm_model = SVC(C=25, gamma=0.001, kernel='poly')
+svm_model = SVC(**loaded_params)
 svm_model.fit(X_train, y_train)
-pred_svm = svm_model.predict(X_test)
+prediction = svm_model.predict(X_test)
 
 # Save the result of prediction to txt file (1 - patient, 0 - control)
-np.savetxt(os.getcwd()+'\outputdir\classification.txt', pred_svm)
+np.savetxt(project_root / 'outputdir' / 'classification.txt', prediction)
