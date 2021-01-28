@@ -5,8 +5,8 @@ Detailed description of the challenge and the data can be found [here](http://ww
 
 ## Reproducibility
 If you would like to reproduce the results of Team HSE from the paper you need to follow next steps:<br>
-1. Download the data from challenge [website](http://www.brainconnectivity.net/challenge_data.html) and put it to `inputdir` folder.
-2. Download the code from this repository.
+1. Download the data from the [website](http://www.brainconnectivity.net/challenge_data.html) and put it to `inputdir` folder.
+2. Download or pull the code from this repository.
 3. Create the conda environment using the `conda-env.yml` file.
 4. Run `train_predict.py`.
 
