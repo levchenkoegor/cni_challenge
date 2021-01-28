@@ -25,10 +25,6 @@ test_tss = [pd.read_csv(path) for path in test_paths]
 test_phen = pd.read_csv(data_dir_test / 'SupportingInfo' / 'phenotypic_validation.csv').replace(
     {"ADHD": 1, "Control": 0, "F": 0, "M": 1})
 
-# Rename string answers to ints
-# Y_tr_data = Y_tr_data.replace({"ADHD": 1, "Control": 0, "F": 0, "M": 1}).drop(columns='Subj')
-# Y_test_data = Y_test_data.replace({"ADHD": 1, "Control": 0, "F": 0, "M": 1}).drop(columns='Subj')
-
 # calculate corr mat for train and test
 train_corr_mats = [df.T.corr() for df in train_tss]
 test_corr_mats = [df.T.corr() for df in test_tss]
